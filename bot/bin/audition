@@ -1,0 +1,81 @@
+#!/usr/bin/env node
+
+if (process.env.DEBUG_FD) delete process.env.DEBUG_FD; // webstorm bug (╯°□°）╯︵ ┻━┻
+
+const { Client } = require('discord.js');
+const client = new Client();
+const config = require('../config');
+const winston = require('winston');
+const path = require('path');
+const SessionManager = require('./lib/session/manager');
+const manager = new SessionManager(
+  client,
+  path.join( __dirname, '../', 'data', 'cache'),
+  path.join( __dirname, '../', 'data', 'sessions')
+);
+
+const actions = {
+  cast( member, guild, channel ){
+    if(!member.voiceChannel) return channel.send(`You're not in s voice channel!`);
+    if(manager.has(guild)) return channel.send(`You can't have more than one recoding session!`);
+    const voice = member.voiceChannel;
+    const session = manager.create(guild, voice);
+    session
+    .on('warn', warn => winston.warn)
+    .on('error', err => winston.error)
+    .on('file', (id, file, start, stop) => {
+      winston.info(`New file made (${id}) ${file}`);
+    })
+    .on('start', time => {
+      channel.send(`${ voice.members.map( m => { if(m.id !== client.user.id ) return m }).filter( m => !!(m) ).join(', ')} started a new recoding session in ${voice}`);
+      winston.info(`${voice.members.map(m =>{ if(m.id !== client.user.id ) return m.displayName }).filter( m => !!(m) ).join(', ')} started a new recoding session in ${voice.name}`);
+    })
+    .on('end', (files, start, end) => {
+      channel.send(`Recording session in ${voice} has ended!`);
+      winston.info(`Recording session in ${voice.name} has ended!`);
+    })
+    .on('disconnected', () => {
+      channel.send(`Oops, I got disconnected, hang on!`);
+      winston.info(`Oops, I got disconnected, hang on!`);
+    })
+    .on('reconnected', () => {
+      channel.send(`I'm back! carry on...`);
+      winston.info(`I'm back! carry on...`);
+    })
+    .on('userLeft', (member) => {
+      channel.send(`${member} you are no longer being recording!`);
+      winston.info(`${member.displayName} you are no longer being recording!`);
+    })
+    .on('userJoined', (member) => {
+      channel.send(`${member} you are are now being recording!`);
+      winston.info(`${member.displayName} you are are now being recording!`);
+    })
+    .on('saving', () =>{
+      channel.send(`Recording session for ${voice} is being processed!`);
+      winston.info(`Recording session for ${voice.name} is being processed!`);
+    })
+    .on('saved', (voiceChannel, file) =>{
+      channel.send(`Done processing ${voice} recording session!`);
+      winston.info(`Done processing ${voice.name} recording session, saved in: ${file}`);
+    });
+    session.start();
+  },
+  end( member, guild, channel ){
+    if(manager.has(guild)) manager.end(guild);
+  }
+};
+
+client
+  .on('error', winston.error)
+  .on('warn', winston.warn)
+  .on('debug', winston.debug)
+  .on('ready', () => winston.info(`Client ready... Logged in as ${client.user.username}#${client.user.discriminator} (${client.user.id})`))
+  .on('disconnect', () => winston.warn(`Disconnected!`))
+  .on('reconnecting', () => winston.warn(`Reconnecting...`))
+  .on('message', (message) => {
+    if(message.author.id !== config.owner || !message.content.startsWith(config.prefix)) return;
+    if(message.content.startsWith(`${config.prefix}cast`)) return actions.cast( message.member, message.guild, message.channel );
+    if(message.content.startsWith(`${config.prefix}end`)) return actions.end( message.member, message.guild, message.channel );
+  });
+
+client.login(config.token);

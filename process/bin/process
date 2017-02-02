@@ -1,0 +1,149 @@
+#!/usr/bin/env node
+
+if (process.env.DEBUG_FD) delete process.env.DEBUG_FD; // webstorm bug (╯°□°）╯︵ ┻━┻
+
+const glob = require("glob");
+const fs = require('fs-extra');
+const path = require('path');
+const Unzip = require('node-unzip-2');
+const opus = require('node-opus');
+const winston = require('winston');
+
+const SESX = require('./lib/sessions/sesx');
+
+const nameRegx = /([0-9]{17,18}-[0-9]{13})/g;
+const encoder = new opus.OpusEncoder(48000, 2);
+const paths = {
+  archives:path.join(__dirname,'../','data','archives'),
+  processed:path.join(__dirname,'../','data','processed'),
+};
+
+const run = () =>{
+  makedir(paths.archives);
+  makedir(paths.processed);
+  glob(path.join(paths.archives,'*.zip'), ( err, files ) => {
+    try{
+      files.forEach( async (file) => {
+        let id = file.match(nameRegx)[0];
+        winston.info(`Processing: ${id}`);
+        const processed =  path.join(paths.processed, id);
+        await makedir(processed);
+        let { session, files } = await json(await unzip(file, processed));
+        makeSESx(processed, session, files);
+        winston.info(`Completed: ${id}`);
+      });
+    }catch (err){
+      winston.error(err);
+    }
+  });
+};
+
+const makeSESx = (path, ses, info) => {
+  winston.info(`Creating sesx file: ${ses.channel}.sesx`);
+  let session = new SESX({
+    path: path,
+    name: ses.channel,
+    start: ses.start,
+    stop: ses.stop
+  });
+  for( let id of Object.keys(info) ){
+    let clip = info[id];
+    session.file(path, `${id}.pcm`);
+    session.clip({
+      track: `${clip.username} (${clip.id})`,
+      file: `${id}.pcm`,
+      name: clip.start,
+      start: clip.start,
+      length: clip.stop - clip.start,
+    });
+  }
+  session.save();
+};
+
+const json = (files)=>{
+  return new Promise( (resolve, reject)=>{
+    Promise.all( files.map( ( file ) => {
+      return new Promise((res, rej)=>{
+        fs.readJson(file, async (err, data)=>{
+          if(err) rej(err);
+          if(data.buffers){
+            let name = file.match(nameRegx)[1];
+            winston.info(`Decoding: ${name}.json`);
+            await decode(data.buffers, 1920, file.replace('.json', '.pcm'));
+            await fs.remove(file);
+            res({
+              name: name,
+              username: data.username,
+              id: data.id,
+              stop: data.stop,
+              start: data.start,
+            });
+          }else{
+            res(data);
+          }
+        });
+      });
+    })).then( data => {
+      let info = {};
+      let session;
+      for( let file of data ){
+        if(file.username){
+          info[file.name] = file;
+        }else{
+          session = file;
+        }
+      }
+      resolve({session: session, files: info})
+    }).catch(err => reject(err));
+  });
+};
+
+const decode = (buffers, frame, file)=>{
+  return new Promise((resolve, reject)=>{
+    const output = fs.createWriteStream(file);
+    output.on('open', async () => {
+      for( let buffer of buffers ){
+        try{
+          await output.write( await encoder.decode(new Buffer(buffer, 'hex'), frame));
+        }catch (err){
+          reject(err);
+        }
+      }
+      output.end();
+    });
+    output.on('close', () => resolve());
+    output.on('error', () => reject());
+  });
+};
+
+const unzip = (file, dir)=>{
+  winston.info(`Unzipping : ${file} =>  ${dir}`);
+  return new Promise((resolve, reject)=>{
+    const unzipper = Unzip.Parse();
+    const files = [];
+    fs.createReadStream(file)
+    .pipe(unzipper)
+    .on('entry', (entry) => {
+      let file = path.join(dir, entry.path);
+      files.push(file);
+      entry.pipe(fs.createWriteStream(file));
+    });
+    unzipper.on('error', (err) =>{ reject(err)});
+    unzipper.on('close', () =>{
+      winston.info(`Unzipping Complete!`);
+      resolve(files);
+    })
+  });
+};
+
+const makedir = (dir)=>{
+  winston.info(`Making directory: ${dir}`);
+  return new Promise((resolve, reject)=>{
+    fs.ensureDir(dir, (err)=>{
+      if(err) reject(err);
+      resolve()
+    });
+  });
+};
+
+run();

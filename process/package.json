@@ -1,0 +1,20 @@
+{
+  "name": "audition-process",
+  "version": "1.0.0",
+  "description": "",
+  "main": "./bin/process",
+  "scripts": {
+    "raw": "node --harmony ./bin/process raw",
+    "sesx": "node --harmony ./bin/process sesx"
+  },
+  "dependencies": {
+    "fs-extra": "^2.0.0",
+    "glob": "^7.1.1",
+    "node-opus": "^0.2.4",
+    "node-unzip-2": "^0.2.1",
+    "winston": "^2.3.1",
+    "xmlbuilder": "^8.2.2"
+  },
+  "author": "",
+  "license": "MIT"
+}
